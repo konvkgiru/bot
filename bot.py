@@ -4,17 +4,12 @@ import json
 import os
 import time
 
-# Токены из переменных окружения Railway
+# Токены из переменных окружения
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CRYPTO_PAY_TOKEN = os.environ.get("CRYPTO_PAY_TOKEN")
 
-# Проверка токенов
-if not TELEGRAM_TOKEN:
-    print("❌ Ошибка: TELEGRAM_TOKEN не установлен!")
-    exit(1)
-
-if not CRYPTO_PAY_TOKEN:
-    print("❌ Ошибка: CRYPTO_PAY_TOKEN не установлен!")
+if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
+    print("❌ Ошибка: Токены не установлены!")
     exit(1)
 
 print("✅ Токены загружены успешно!")
@@ -24,20 +19,27 @@ RATE_USDT_TO_RUB = 77.43
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Простой обработчик
+# ===== ВАЖНО! Сброс вебхука перед запуском =====
+try:
+    bot.remove_webhook()
+    print("✅ Вебхук сброшен")
+    time.sleep(2)
+except Exception as e:
+    print(f"⚠️ Ошибка сброса вебхука: {e}")
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
         message,
-        f"🤖 Бот работает!\n\n"
-        f"Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽\n\n"
-        f"Отправьте сумму в рублях, например: 100"
+        f"🤖 *Бот работает!*\n\n"
+        f"💰 Курс: *1 USDT = {RATE_USDT_TO_RUB} ₽*\n\n"
+        f"Просто отправьте сумму в рублях, например: *100*",
+        parse_mode="Markdown"
     )
 
 @bot.message_handler(func=lambda message: True)
 def handle_amount(message):
     try:
-        # Пробуем преобразовать текст в число
         rub_amount = float(message.text.replace(',', '.'))
         
         if rub_amount < 10:
@@ -69,27 +71,25 @@ def handle_amount(message):
             data = response.json()
             if data.get("ok"):
                 pay_url = data["result"]["pay_url"]
-                invoice_id = data["result"]["invoice_id"]
                 
                 keyboard = telebot.types.InlineKeyboardMarkup()
                 keyboard.add(telebot.types.InlineKeyboardButton("💳 ОПЛАТИТЬ", url=pay_url))
                 
                 bot.reply_to(
                     message,
-                    f"🧾 *Счёт на оплату*\n\n"
-                    f"Сумма: {rub_amount} ₽\n"
-                    f"К оплате: {usdt_amount} USDT\n\n"
-                    f"Нажмите кнопку ниже для оплаты",
+                    f"🧾 *Счёт на {rub_amount} ₽*\n\n"
+                    f"К оплате: *{usdt_amount} USDT*\n\n"
+                    f"Нажмите кнопку ниже",
                     parse_mode="Markdown",
                     reply_markup=keyboard
                 )
             else:
                 bot.reply_to(message, f"❌ Ошибка: {data.get('error')}")
         else:
-            bot.reply_to(message, f"❌ Ошибка HTTP: {response.status_code}")
+            bot.reply_to(message, f"❌ Ошибка: {response.status_code}")
             
     except ValueError:
-        # Если это не число, игнорируем
+        # Не число - игнорируем
         pass
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
@@ -99,7 +99,11 @@ if __name__ == "__main__":
     print(f"📊 Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽")
     print("🤖 Начинаем polling...")
     
-    try:
-        bot.infinity_polling(timeout=60)
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
+    # Бесконечный цикл с переподключением
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            print("🔄 Переподключение через 5 секунд...")
+            time.sleep(5)
