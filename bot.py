@@ -2,16 +2,14 @@ import telebot
 import requests
 import json
 import os
-import time
-import re
 
-# ===== НАСТРОЙКИ =====
+# БЕЗОПАСНО: токены из переменных окружения
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CRYPTO_PAY_TOKEN = os.environ.get("CRYPTO_PAY_TOKEN")
 
 if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
-    print("❌ Ошибка: Не установлены переменные окружения!")
-    print("Установите TELEGRAM_TOKEN и CRYPTO_PAY_TOKEN")
+    print("❌ Токены не найдены!")
+    print("Установите: TELEGRAM_TOKEN и CRYPTO_PAY_TOKEN")
     exit(1)
 
 CRYPTO_PAY_API_URL = "https://testnet-pay.crypt.bot/api"
@@ -24,7 +22,6 @@ def rub_to_usdt(rub_amount):
     return round(rub_amount / RATE_USDT_TO_RUB, 2)
 
 def create_invoice(amount_usdt, telegram_id, rub_amount):
-    """Создаёт счёт и получает ссылку на официальную страницу"""
     headers = {
         "Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN,
         "Content-Type": "application/json"
@@ -52,19 +49,16 @@ def create_invoice(amount_usdt, telegram_id, rub_amount):
         if response.status_code == 200:
             data = response.json()
             if data.get("ok"):
-                # pay_url ведёт на официальную страницу!
                 return {
                     "success": True,
                     "invoice_id": data["result"]["invoice_id"],
-                    "pay_url": data["result"]["pay_url"],
-                    "invoice_data": data["result"]
+                    "pay_url": data["result"]["pay_url"]
                 }
-        return {"success": False, "error": "Ошибка создания счёта"}
+        return {"success": False, "error": "Ошибка API"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 def check_invoice(invoice_id):
-    """Проверяет статус счёта"""
     headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
     params = {"invoice_ids": invoice_id}
     
@@ -82,184 +76,75 @@ def check_invoice(invoice_id):
                 return data["result"]["items"][0]
         return None
     except Exception as e:
-        print(f"Ошибка проверки: {e}")
+        print(f"Ошибка: {e}")
         return None
 
-# ===== ОБРАБОТЧИКИ КОМАНД =====
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(telebot.types.InlineKeyboardButton("💸 Ввести сумму", callback_data="enter_amount"))
-    keyboard.add(telebot.types.InlineKeyboardButton("💰 Получить тестовые USDT", url="https://t.me/CryptoTestnetBot?start=faucet"))
-    keyboard.add(telebot.types.InlineKeyboardButton("📊 Курс", callback_data="rate"))
+    keyboard = telebot.types.InlineKeyboardMarkup()
+    keyboard.add(telebot.types.InlineKeyboardButton("💸 Оплатить", callback_data="pay"))
     
     bot.send_message(
         message.chat.id,
-        f"🤖 *Крипто-платёжный бот*\n\n"
-        f"💵 Принимаю оплату в *USDT*\n"
-        f"📊 Курс: *1 USDT = {RATE_USDT_TO_RUB} ₽*\n\n"
-        f"👇 Нажмите «Ввести сумму»",
-        parse_mode="Markdown",
+        f"🤖 Крипто-бот\nКурс: 1 USDT = {RATE_USDT_TO_RUB} ₽\n\nНажмите «Оплатить»",
         reply_markup=keyboard
     )
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    if call.data == "enter_amount":
-        bot.answer_callback_query(call.id)
-        msg = bot.send_message(
-            call.message.chat.id,
-            f"💸 *Введите сумму в рублях*\n\n"
-            f"Пример: `500` или `1250.50`\n\n"
-            f"💰 Минимальная сумма: *10 ₽*\n"
-            f"📊 Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽",
-            parse_mode="Markdown"
-        )
-        bot.register_next_step_handler(msg, process_rub_amount)
-    
-    elif call.data == "rate":
-        bot.answer_callback_query(call.id, f"1 USDT = {RATE_USDT_TO_RUB} ₽", show_alert=True)
-    
-    elif call.data.startswith("check_"):
-        invoice_id = int(call.data.split("_")[1])
-        invoice_data = active_invoices.get(call.from_user.id, {})
-        rub_amount = invoice_data.get("amount_rub", 0)
-        pay_url = invoice_data.get("pay_url", "")
-        
-        bot.answer_callback_query(call.id, "🔄 Проверяю статус...")
-        invoice = check_invoice(invoice_id)
-        
-        if invoice:
-            if invoice["status"] == "paid":
-                paid_usdt = float(invoice.get("amount", "0"))
-                paid_rub = round(paid_usdt * RATE_USDT_TO_RUB, 2)
-                
-                bot.answer_callback_query(call.id, "✅ Оплачено!", show_alert=True)
-                bot.edit_message_text(
-                    f"✅ *Платёж подтверждён!*\n\n"
-                    f"💸 Сумма: *{rub_amount} ₽*\n"
-                    f"💵 Оплачено: {paid_usdt} USDT\n"
-                    f"🆔 ID: `{invoice_id}`\n\n"
-                    f"🎉 Спасибо за оплату!",
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    parse_mode="Markdown"
-                )
-                if call.from_user.id in active_invoices:
-                    del active_invoices[call.from_user.id]
-                    
-            elif invoice["status"] == "active":
-                keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
-                keyboard.add(telebot.types.InlineKeyboardButton("💳 Оплатить", url=pay_url))
-                keyboard.add(telebot.types.InlineKeyboardButton("✅ Проверить снова", callback_data=f"check_{invoice_id}"))
-                
-                bot.answer_callback_query(call.id, f"⏳ Ещё не оплачено", show_alert=True)
-                bot.edit_message_text(
-                    f"⏳ *Счёт ещё не оплачен*\n\n"
-                    f"💸 Сумма: {rub_amount} ₽\n"
-                    f"💵 К оплате: {invoice['amount']} USDT\n\n"
-                    f"🔗 Нажмите кнопку для оплаты",
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-            else:
-                bot.answer_callback_query(call.id, "⏰ Счёт просрочен. Начните заново: /start", show_alert=True)
-        else:
-            bot.answer_callback_query(call.id, "❌ Счёт не найден", show_alert=True)
+    if call.data == "pay":
+        msg = bot.send_message(call.message.chat.id, "💸 Введите сумму в рублях:")
+        bot.register_next_step_handler(msg, process_payment)
 
-def process_rub_amount(message):
+def process_payment(message):
     try:
         rub_amount = float(message.text.replace(',', '.'))
         
         if rub_amount < 10:
-            bot.reply_to(message, "❌ Минимальная сумма — *10 ₽*", parse_mode="Markdown")
-            return
-        
-        if rub_amount > 100000:
-            bot.reply_to(message, "❌ Максимальная сумма — *100 000 ₽*", parse_mode="Markdown")
+            bot.reply_to(message, "❌ Минимум 10 ₽")
             return
         
         usdt_amount = rub_to_usdt(rub_amount)
         
-        if usdt_amount < 0.01:
-            bot.reply_to(message, f"❌ Сумма слишком маленькая", parse_mode="Markdown")
-            return
-        
-        status_msg = bot.reply_to(message, "🔄 Создаю платёжный счёт...")
         result = create_invoice(usdt_amount, message.chat.id, rub_amount)
         
         if result["success"]:
             active_invoices[message.chat.id] = {
                 "invoice_id": result["invoice_id"],
                 "amount_rub": rub_amount,
-                "amount_usdt": usdt_amount,
                 "pay_url": result["pay_url"]
             }
             
-            keyboard = telebot.types.InlineKeyboardMarkup(row_width=1)
+            keyboard = telebot.types.InlineKeyboardMarkup()
             keyboard.add(telebot.types.InlineKeyboardButton("💳 Оплатить", url=result["pay_url"]))
-            keyboard.add(telebot.types.InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_{result['invoice_id']}"))
-            keyboard.add(telebot.types.InlineKeyboardButton("💰 Получить тестовые USDT", url="https://t.me/CryptoTestnetBot?start=faucet"))
+            keyboard.add(telebot.types.InlineKeyboardButton("✅ Проверить", callback_data=f"check_{result['invoice_id']}"))
             
-            bot.edit_message_text(
-                f"🧾 *Счёт создан*\n\n"
-                f"💸 Сумма: *{rub_amount} ₽*\n"
-                f"💵 К оплате: *{usdt_amount} USDT*\n"
-                f"📊 Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽\n"
-                f"🆔 ID: `{result['invoice_id']}`\n\n"
-                f"🔹 *Как оплатить:*\n"
-                f"1️⃣ Нажмите «Оплатить»\n"
-                f"2️⃣ Оплатите в официальном приложении\n"
-                f"3️⃣ Нажмите «Проверить оплату»\n\n"
-                f"⏰ Счёт действителен *1 час*",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                parse_mode="Markdown",
+            bot.reply_to(
+                message,
+                f"🧾 Счёт: {rub_amount} ₽ = {usdt_amount} USDT\n\nНажмите «Оплатить»",
                 reply_markup=keyboard
             )
         else:
-            bot.edit_message_text(
-                f"❌ Ошибка: {result['error']}\n\nПопробуйте позже",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id
-            )
+            bot.reply_to(message, f"❌ Ошибка: {result['error']}")
             
     except ValueError:
-        bot.reply_to(message, "❌ *Неверный формат*\nВведите число, например: `500`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Введите число")
 
-@bot.message_handler(commands=['help'])
-def handle_help(message):
-    bot.reply_to(
-        message,
-        f"🤖 *Помощь*\n\n"
-        f"1️⃣ /start — начать\n"
-        f"2️⃣ Введите сумму в рублях\n"
-        f"3️⃣ Оплатите через официальное приложение\n"
-        f"4️⃣ Нажмите «Проверить оплату»\n\n"
-        f"📊 Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽",
-        parse_mode="Markdown"
-    )
-
-# Keep-alive для Railway (чтобы бот не засыпал)
-from flask import Flask
-import threading
-
-app = Flask(__name__)
-
-@app.route('/')
-def health():
-    return "Bot is running!", 200
-
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
-
-# Запускаем веб-сервер в отдельном потоке
-threading.Thread(target=run_web, daemon=True).start()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_"))
+def check_payment(call):
+    invoice_id = int(call.data.split("_")[1])
+    invoice = check_invoice(invoice_id)
+    
+    if invoice and invoice["status"] == "paid":
+        bot.answer_callback_query(call.id, "✅ Оплачено!", show_alert=True)
+        bot.edit_message_text(
+            "✅ Платёж подтверждён! Спасибо!",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+    else:
+        bot.answer_callback_query(call.id, "⏳ Ещё не оплачено", show_alert=True)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущен на Railway!")
-    print(f"📊 Курс: 1 USDT = {RATE_USDT_TO_RUB} ₽")
-    print("🔗 Официальная страница: https://testnet-app.send.tg/")
-    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    print("✅ Бот запущен!")
+    bot.infinity_polling()
